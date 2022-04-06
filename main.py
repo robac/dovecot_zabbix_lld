@@ -4,6 +4,7 @@ import json
 import pprint
 import os
 import datetime
+from collections import defaultdict
 
 CONFIG = {
     "temp_file" : "cache.txt",
@@ -26,80 +27,76 @@ def get_file_age_from_now(filename : str) -> int:
     now = datetime.datetime.now().timestamp()
     return(int(now - file_age))
 
-def load_http_data():
+
+def load_http_data() -> str:
     response_raw = requests.post(REQUEST["url"], headers=REQUEST["headers"], json=json.loads(REQUEST["data"]))
     response_conv = response_raw.content.decode('utf-8')
-    with open(CONFIG["temp_file"], 'w') as temp:
-        temp.write(response_conv)
-    return json.loads(response_conv)[0][1]
+    return json.loads(response_conv)
 
-def get_dovecot_data():
-    if os.path.exists(CONFIG["temp_file"]) and get_file_age_from_now(CONFIG["temp_file"]) < CONFIG["max_temp_age"]:
-        try:
-            with open(CONFIG["temp_file"], 'r') as temp:
-                data = temp.read()
-                response = json.loads(data)[0][1]
-                return response
-        except:
-            pass
 
-    return load_http_data()
-
-def is_cache_valid():
+def is_cache_valid() -> bool:
     return os.path.exists(CONFIG["temp_file"]) and get_file_age_from_now(CONFIG["temp_file"]) < CONFIG["max_temp_age"]
 
 
-def load_cache():
-    with open(CONFIG["temp_file"], 'r') as temp:
-        data = temp.read()
-        response = json.loads(data)[0][1]
-        return response
+def assemble_users(data):
+    used = set()
+    usernames = [i["username"] for i in data if (i["username"] not in used) and (used.add(i["username"]) or True)]
+    usernames.sort()
+    return usernames
 
 
-def get_dovecot_users():
+def assemble_mailboxes(data):
+    mailboxes = defaultdict(lambda: {'vsize' : 0, 'messages' : 0})
+    for i in data:
+        mailboxes[i["username"]]["vsize"] += int(i["vsize"])
+        mailboxes[i["username"]]["messages"] += int(i["messages"])
+    return mailboxes
+
+
+
+def get_dovecot_data(save : bool = True):
     if is_cache_valid():
         try:
-            return load_cache()
+            with open(CONFIG["temp_file"], 'r') as temp:
+                usernames = json.loads(temp.readline())
+                mailboxes = json.loads(temp.readline())
         except:
             pass
+        else:
+            return usernames, mailboxes
 
-    return load_http_data(save=True)
+    data = load_http_data()[0][1]
+    usernames = assemble_users(data)
+    mailboxes = assemble_mailboxes(data)
+    if (save):
+        with open(CONFIG["temp_file"], 'w') as temp:
+            temp.write(json.dumps(usernames, separators=(',', ':'))+"\n")
+            temp.write(json.dumps(mailboxes, separators=(',', ':')))
+    return usernames, mailboxes
 
 
 def return_lld():
-    usernames = {}
-    dovecot_data = get_dovecot_data()
-    for item in dovecot_data:
-        username = item['username']
-        if not username in usernames:
-            usernames[username] = None
-
-    result = []
-    for username in usernames.keys():
-        result.append({CONFIG["username_macro"] : username})
-
-    result = sorted(result, key= lambda item : item[CONFIG["username_macro"]])
+    usernames, _ = get_dovecot_data()
+    result = [{CONFIG["username_macro"] : i} for i in usernames]
     print(json.dumps(result, separators=(',', ':')))
 
 def return_vsize(name : str):
     name = name.strip().lower()
-    dovecot_data = get_dovecot_data()
-    vsize = 0
-    for item in dovecot_data:
-        username = item['username']
-        if (username == name):
-            vsize += int(item['vsize'])
-    print(vsize)
+    _, mailboxes = get_dovecot_data()
+
+    if (name in mailboxes):
+        print(mailboxes[name]['vsize'])
+    else:
+        print(-1)
 
 def return_messages(name : str):
     name = name.strip().lower()
-    dovecot_data = get_dovecot_data()
-    messages = 0
-    for item in dovecot_data:
-        username = item['username']
-        if (username == name):
-            messages += int(item['messages'])
-    print(messages)
+    _, mailboxes = get_dovecot_data()
+
+    if (name in mailboxes):
+        print(mailboxes[name]['messages'])
+    else:
+        print(-1)
 
 
 def main():
