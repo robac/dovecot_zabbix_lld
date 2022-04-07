@@ -1,48 +1,32 @@
 import sys
 import requests
 import json
-import pprint
-import os
 import datetime
 from collections import defaultdict
-
-CONFIG = {
-    "temp_file" : "cache.txt",
-    "max_temp_age" : 300,
-    "username_macro" : r"{#USERNAME}"
-}
-
-REQUEST = {
-    "url" : r'http://172.30.128.189:8080/doveadm/v1',
-    "headers" : {
-        "Authorization" : "X-Dovecot-API a2V5",
-        "Content-Type" : "application/json"
-    },
-    "data" : r'[["mailboxStatus",{"allUsers":true,"field":["all"],"mailboxMask":["*"]},"tag1"]]'
-}
+import base64
+import copy
+import mysql.connector as database
+from config import CONFIG
 
 
-def get_file_age_from_now(filename : str) -> int:
-    file_age = os.path.getmtime(CONFIG["temp_file"])
-    now = datetime.datetime.now().timestamp()
-    return(int(now - file_age))
+def connect_db():
+    connection = database.connect(
+        user=CONFIG["db_connection"]["user"],
+        password=CONFIG["db_connection"]["pwd"],
+        host=CONFIG["db_connection"]["host"],
+        database=CONFIG["db_connection"]["db"],
+        port=CONFIG["db_connection"]["port"]
+    , autocommit=False)
+    return connection
 
 
-def load_http_data() -> str:
-    response_raw = requests.post(REQUEST["url"], headers=REQUEST["headers"], json=json.loads(REQUEST["data"]))
+def http_get_dovecot_mailboxes() -> str:
+    headers = copy.deepcopy(CONFIG["dovecot"]["headers"])
+    pwd = bytes(base64.b64encode(CONFIG["dovecot"]["pwd"].encode())).decode()
+    headers["Authorization"] = headers["Authorization"].format(pwd=pwd)
+    response_raw = requests.post(CONFIG["dovecot"]["url"], headers=headers, json=json.loads(CONFIG["dovecot"]["requests"]["get_mailbox_stat_all"]))
     response_conv = response_raw.content.decode('utf-8')
-    return json.loads(response_conv)
-
-
-def is_cache_valid() -> bool:
-    return os.path.exists(CONFIG["temp_file"]) and get_file_age_from_now(CONFIG["temp_file"]) < CONFIG["max_temp_age"]
-
-
-def assemble_users(data):
-    used = set()
-    usernames = [i["username"] for i in data if (i["username"] not in used) and (used.add(i["username"]) or True)]
-    usernames.sort()
-    return usernames
+    return json.loads(response_conv)[0][1]
 
 
 def assemble_mailboxes(data):
@@ -50,51 +34,55 @@ def assemble_mailboxes(data):
     for i in data:
         mailboxes[i["username"]]["vsize"] += int(i["vsize"])
         mailboxes[i["username"]]["messages"] += int(i["messages"])
-    return mailboxes
+
+    mailboxes_list = [{'username' : k, "vsize" : v["vsize"], "messages" : v["messages"]} for k, v in mailboxes.items()]
+    return mailboxes_list
 
 
+def refresh_db_data(conn : database.MySQLConnection):
+    with conn.cursor(buffered=True) as cursor:
+        cursor.execute(CONFIG["queries"]["get_last_update"])
+        last_update = cursor.fetchall()
+        if (len(last_update) == 1) and (datetime.datetime.now().timestamp() - last_update[0][0].timestamp() < CONFIG["cache"]["max_cache_age"]):
+            return
 
-def get_dovecot_data(save : bool = True):
-    if is_cache_valid():
+        mailboxes = http_get_dovecot_mailboxes()
+        mailboxes_as = assemble_mailboxes(mailboxes)
+
         try:
-            with open(CONFIG["temp_file"], 'r') as temp:
-                usernames = json.loads(temp.readline())
-                mailboxes = json.loads(temp.readline())
+            cursor.execute(CONFIG["queries"]["update_last_update"])
+            for i in mailboxes_as:
+                statement = CONFIG["queries"]["update_mailbox_info"].format(username=i["username"], vsize=i["vsize"], messages=i["messages"])
+                cursor.executemany(statement, mailboxes_as)
         except:
-            pass
+            conn.rollback()
         else:
-            return usernames, mailboxes
-
-    data = load_http_data()[0][1]
-    usernames = assemble_users(data)
-    mailboxes = assemble_mailboxes(data)
-    if (save):
-        with open(CONFIG["temp_file"], 'w') as temp:
-            temp.write(json.dumps(usernames, separators=(',', ':'))+"\n")
-            temp.write(json.dumps(mailboxes, separators=(',', ':')))
-    return usernames, mailboxes
+            conn.commit()
 
 
 def return_lld():
-    usernames, _ = get_dovecot_data()
-    result = [{CONFIG["username_macro"] : i} for i in usernames]
+    conn =  connect_db()
+    refresh_db_data(conn)
+
+    cursor = conn.cursor()
+    cursor.execute(CONFIG["queries"]["get_usernames"])
+    usernames = cursor.fetchall()
+    result = [{CONFIG["lld"]["username_macro"]: i[0]} for i in usernames]
     print(json.dumps(result, separators=(',', ':')))
 
-def return_vsize(name : str):
-    name = name.strip().lower()
-    _, mailboxes = get_dovecot_data()
 
-    if (name in mailboxes):
-        print(mailboxes[name]['vsize'])
-    else:
-        print(-1)
+def return_user_param(name : str, param : str):
+    if not param in CONFIG["allowed_user_params"]:
+        return
 
-def return_messages(name : str):
-    name = name.strip().lower()
-    _, mailboxes = get_dovecot_data()
+    conn =  connect_db()
+    refresh_db_data(conn)
+    cursor = conn.cursor()
+    cursor.execute(CONFIG["queries"]["get_user_vsize"].format(username=name, param=param))
+    res = cursor.fetchall()
 
-    if (name in mailboxes):
-        print(mailboxes[name]['messages'])
+    if len(res) == 1:
+        print(res[0][0])
     else:
         print(-1)
 
@@ -103,9 +91,9 @@ def main():
     if len(sys.argv) == 2 and sys.argv[1] == 'lld':
         return_lld()
     elif len(sys.argv) == 3 and(sys.argv[1] == 'vsize'):
-        return_vsize(sys.argv[2])
+        return_user_param(sys.argv[2], 'vsize')
     elif len(sys.argv) == 3 and (sys.argv[1] == 'messages'):
-        return_messages(sys.argv[2])
+        return_user_param(sys.argv[2], 'messages')
     else:
         print("Invalid arguments:");
         print(sys.argv)
