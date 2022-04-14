@@ -1,14 +1,6 @@
 CONFIG = {
     "dovecot" : {
-        "url": r'http://172.30.128.189:8080/doveadm/v1',
-        "pwd" : "key",
-        "requests" : {
-            "get_mailbox_stat_all" : r'[["mailboxStatus",{"allUsers":true,"field":["all"],"mailboxMask":["*"]},"tag1"]]',
-        },
-        "headers" : {
-            "Authorization" : "X-Dovecot-API {pwd}",
-            "Content-Type" : "application/json",
-        },
+        "users_folder" : r'd:\\test\\xxx\\',
     },
     "db_connection" : {
         "host" : "127.0.0.1",
