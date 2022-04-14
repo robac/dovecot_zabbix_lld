@@ -53,7 +53,6 @@ def refresh_db_data(conn : database.MySQLConnection):
                 cursor.execute(statement)
         except Exception as e:
             conn.rollback()
-            print(e)
         else:
             conn.commit()
 
