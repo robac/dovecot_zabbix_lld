@@ -14,8 +14,8 @@ CONFIG = {
         "host" : "127.0.0.1",
         "port" : 3307,
         "db" : "zabbix_dovecot_stats",
-        "user" : "root",
-        "pwd" : "example"
+        "user" : "stats",
+        "pwd" : "***"
     },
     "queries" :{
         "get_last_update" : "SELECT last_update FROM info WHERE id = 1;",
